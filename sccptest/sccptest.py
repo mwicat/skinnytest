@@ -146,9 +146,6 @@ def runTestCase(reactor, config, func, superviseFunc):
     def queueMessage(message):
         queue.put(message)
 
-    # for captureMessage in config['capture']:
-    #     sccpPhone.client.addHandler(captureMessage, queueMessage)
-
     sccpPhone.client.handleUnknownMessage(queueMessage)
 
     def createTimer(intervalSecs,timerCallback):
