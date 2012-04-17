@@ -49,7 +49,9 @@ succStatus = 0
 
 def client(**kwargs):
     def decorator(target):
-        target.config = kwargs
+        if not hasattr(target, 'configs'):
+            target.configs = []
+        target.configs.insert(0, kwargs)
         target.client = True
         return target
     return decorator
@@ -66,12 +68,15 @@ def getMessage(client):
 def findMessage(pred, client):
     newMessages = clearQueue(client.queue)
     client.messages.extend(newMessages)
+    found_elem = None
     for i in range(len(client.messages)):
         elem = client.messages[i]
         if pred(elem):
             del client.messages[i]
-            return elem
-    return None
+            found_elem = elem
+            break
+    print 'element not found when messages =', client.messages
+    return found_elem
 
 def findMessageLoop(pred, client, retries, sleep):
     elem = None
@@ -119,7 +124,7 @@ def expectCallState(message, state):
 def expectTone(message, tone):
     return message.tone == tone
 
-def pushSoftKey(client, softkey, call):
+def pushSoftKey(client, softkey, call=NO_CALL):
     sk_event = SCCPSoftKeyEvent(softkey, call.line, call.id)
     sendMessage(client, sk_event)
 
@@ -135,51 +140,67 @@ def clearMessages(client):
 def sendMessage(client, message):
     client.reactor.callFromThread(client.phone.client.sendSccpMessage, message)
 
-def runTestCase(reactor, config, func, superviseFunc):        
+
+def setupClientSession(client):
+    softKeySetMessage = SCCPMessage(SCCPMessageType.SoftKeySetReqMessage)
+    softKeyTemplateMessage = SCCPMessage(SCCPMessageType.SoftKeyTemplateReqMessage)
+    sendMessage(client, softKeyTemplateMessage)
+    sendMessage(client, softKeySetMessage)
+
+
+def connectClient(reactor, config, onClient):
     addr, port = config['serverAddress']
     bindAddress = config['bindAddress']
 
-    queue = Queue()
     sccpPhone = SCCPDumbPhone(addr, config['device'])
     sccpPhone.createClient()
 
+    queue = Queue()
+
     def queueMessage(message):
         queue.put(message)
-
     sccpPhone.client.handleUnknownMessage(queueMessage)
 
     def createTimer(intervalSecs,timerCallback):
         reactor.callLater(intervalSecs, timerCallback)
     sccpPhone.createTimer = createTimer
 
-    connection = reactor.connectTCP(addr, port, sccpPhone.client, bindAddress=bindAddress)
-
     def onRegistered():
         client = Client(queue, sccpPhone, [], reactor, None)
-
-        softKeySetMessage = SCCPMessage(SCCPMessageType.SoftKeySetReqMessage)
-        softKeyTemplateMessage = SCCPMessage(SCCPMessageType.SoftKeyTemplateReqMessage)
-        sendMessage(client, softKeyTemplateMessage)
-        sendMessage(client, softKeySetMessage)
-
-        def superviseWrapper():
-            succ = False
-            try:
-                func(client)
-                succ = True
-            finally:
-                reactor.callFromThread(superviseFunc, connection, succ)
-        Thread(target=superviseWrapper).start()
-
+        onClient(client)
     sccpPhone.onRegistered = onRegistered
 
-def filter_test_functions(functions):
-    return [f for f in functions if hasattr(f, 'client')]
+    connection = reactor.connectTCP(addr, port, sccpPhone.client, bindAddress=bindAddress)
+    return connection
+
+def runTestCase(reactor, configs, func, superviseFunc):        
+    clients = []
+    connections = []
+
+    def runTestFunc():
+        no_errors = False
+        try:
+            func(*clients)
+            no_errors = True
+        finally:
+            reactor.callFromThread(superviseFunc, connections, no_errors)
+
+    for config in configs:
+        def onClient(client):
+            setupClientSession(client)
+            clients.append(client)
+            got_all_clients = len(clients) == len(configs)
+            if got_all_clients:
+                Thread(target=runTestFunc).start()
+        connection = connectClient(reactor, config, onClient)
+        connections.append(connection)
+
+
 
 def findTestCases(mod):
     functions = inspect_util.get_functions(mod)
-    tests = filter_test_functions(functions)
-    testCases = [(test.config, test) for test in tests]
+    tests = [f for f in functions if hasattr(f, 'client')]
+    testCases = [(test.configs, test) for test in tests]
     return testCases
 
 def load_test_module(fname):
@@ -196,8 +217,9 @@ def main():
 
     threadCount = [len(testCases)]
 
-    def supervise(connection, succ):
-        connection.disconnect()
+    def supervise(connections, succ):
+        for connection in connections:
+            connection.disconnect()
         threadCount[0] = threadCount[0]-1
         if threadCount[0] == 0 or not succ:
             if not succ:
@@ -205,8 +227,8 @@ def main():
                 succStatus = 1
             reactor.callLater(0.01, reactor.stop)
 
-    for testConfig, testFunc in testCases:
-        runTestCase(reactor, testConfig, testFunc, supervise)
+    for testConfigs, testFunc in testCases:
+        runTestCase(reactor, testConfigs, testFunc, supervise)
 
     reactor.run()
     sys.exit(succStatus)
