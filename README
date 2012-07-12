@@ -1,1 +1,17 @@
+Generate user directory with necessary extensions:
 
+bash gendirectory.sh EXTENSION_COUNT FIRST_EXTENSION
+
+bash gendirectory.sh 20 1101 > conf1/directory/default/testing.xml
+
+Run FreeSWITCH with proper configuration and user directory:
+
+freeswitch -nonat -conf conf1 -log tmp/log -db tmp/db
+
+Install sccptest:
+
+sudo python setup.py develop
+
+Run test framework with proper test module:
+
+sccptest transfer_template_test.py

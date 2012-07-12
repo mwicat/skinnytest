@@ -71,6 +71,7 @@ class SCCPDumbPhone():
         
     def onKeepAliveTimer(self):
         log.info('on keep alive')
+        print 'keep alive'
         message = SCCPMessage(SCCPMessageType.KeepAliveMessage)
         self.client.sendSccpMessage(message)
         
@@ -79,7 +80,9 @@ class SCCPDumbPhone():
         log.info("--          keepAliveInterval : " + `registerAck.keepAliveInterval`)
         log.info("--               dateTemplate : " + `registerAck.dateTemplate`)
         log.info("-- secondaryKeepAliveInterval : " + `registerAck.secondaryKeepAliveInterval`)
-        self.createTimer(registerAck.keepAliveInterval,self.onKeepAliveTimer)
+        keepAlive = int(registerAck.keepAliveInterval * 0.1)
+        print 'start keep alive with interval', keepAlive
+        self.createTimer(keepAlive,self.onKeepAliveTimer)
         self.onRegistered()
 
     def onOpenReceiveChannel(self,message):

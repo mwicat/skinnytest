@@ -22,6 +22,12 @@ from threading import Thread
 
 import imp
 
+import plac
+
+
+from twisted.internet import reactor
+from twisted.internet import defer
+
 
 SKS_ONHOOK, SKS_CONNECTED, SKS_ONHOLD, \
 SKS_RINGIN, SKS_OFFHOOK, SKS_CONNTRANS, SKS_DIGOFF, \
@@ -31,6 +37,8 @@ SKS_CONNCONF, SKS_DIAL, SKS_OFFHOOKFEAT = range(10)
 KEYSETS_SOFTKEYS = {
     SKS_ONHOOK: [softkeys.SKINNY_LBL_NEWCALL],
     SKS_DIGOFF: [],
+    SKS_OFFHOOK: [],
+    SKS_DIAL: [],
     SKS_RINGIN: [softkeys.SKINNY_LBL_ANSWER, softkeys.SKINNY_LBL_ENDCALL],
     SKS_ONHOLD: [softkeys.SKINNY_LBL_TRANSFER],
     SKS_CONNTRANS: [softkeys.SKINNY_LBL_TRANSFER, softkeys.SKINNY_LBL_ENDCALL],
@@ -75,8 +83,12 @@ def findMessage(pred, client):
             del client.messages[i]
             found_elem = elem
             break
-    print 'element not found when messages =', client.messages
     return found_elem
+
+def wait(seconds, result=None):
+    d = defer.Deferred()
+    reactor.callLater(seconds, d.callback, result)
+    return d
 
 def findMessageLoop(pred, client, retries, sleep):
     elem = None
@@ -89,21 +101,26 @@ def findMessageLoop(pred, client, retries, sleep):
     return elem
 
 def callEquals(call, message):
-    return call is None or hasattr(message, 'line') and hasattr(message, 'callId') and getCallInfo(message)
+    return call is None or hasattr(message, 'callId') and call.id == message.callId
+
 
 def match(messageType):
     def decorator(target):
         def f(client, *args, **kw):
             wait = kw.pop('wait', QUEUE_SLEEP)
+            call_pred = kw.pop('call_pred', callEquals)
+            call = kw.pop('call', None)
             def pred(message):
-                call = kw.pop('call', None)
+                # print 'call', call, message
                 message_type_ok = messageType == message.sccpmessageType
-                return message_type_ok and callEquals(call, message) and target(message, *args, **kw)
+                return message_type_ok and call_pred(call, message) and target(message, *args, **kw)
             message = findMessageLoop(pred, client, QUEUE_RETRY, wait)
             assert message is not None
             return message
         return f
     return decorator
+
+
         
 def getCallInfo(message):
     return CallInfo(line=message.line, id=message.callId)
@@ -150,7 +167,7 @@ def setupClientSession(client):
 
 def connectClient(reactor, config, onClient):
     addr, port = config['serverAddress']
-    bindAddress = config['bindAddress']
+    bindAddress = config.get('bindAddress', None)
 
     sccpPhone = SCCPDumbPhone(addr, config['device'])
     sccpPhone.createClient()
@@ -185,15 +202,21 @@ def runTestCase(reactor, configs, func, superviseFunc):
         finally:
             reactor.callFromThread(superviseFunc, connections, no_errors)
 
-    for config in configs:
+    counter_lst = [len(configs)]
+    for idx, config in enumerate(configs):
+        myconfig = config.copy()
         def onClient(client):
+            counter_lst[0] -= 1
+            print counter_lst[0], 'to go'
             setupClientSession(client)
             clients.append(client)
             got_all_clients = len(clients) == len(configs)
             if got_all_clients:
                 Thread(target=runTestFunc).start()
-        connection = connectClient(reactor, config, onClient)
-        connections.append(connection)
+        def connectAndAppend(cfg):
+            #print 'connecting'
+            connections.append(connectClient(reactor, cfg, onClient))
+        reactor.callLater(idx * 0.05, connectAndAppend, myconfig)
 
 
 
@@ -205,16 +228,9 @@ def findTestCases(mod):
 
 def load_test_module(fname):
     return imp.load_source('test_module', fname)
-    
-def main():
-    from twisted.internet import reactor
 
-    import sys
-    fname = sys.argv[1]
 
-    mod = load_test_module(fname)
-    testCases = findTestCases(mod)
-
+def handleTestCases(reactor, testCases):
     threadCount = [len(testCases)]
 
     def supervise(connections, succ):
@@ -230,8 +246,26 @@ def main():
     for testConfigs, testFunc in testCases:
         runTestCase(reactor, testConfigs, testFunc, supervise)
 
+
+@plac.annotations(
+   fname=('Filename'),
+   repeat=('Repeat', 'option', 'r', int)
+   )
+def run(fname, repeat=1):
+
+    mod = load_test_module(fname)
+    testCases = findTestCases(mod)
+
+
+    handleTestCases(reactor, testCases)
+
     reactor.run()
     sys.exit(succStatus)
+        
 
-if __name__ == "__main__":
+def main():
+    plac.call(run)
+
+
+if __name__ == '__main__':
     main()
